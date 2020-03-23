@@ -1,4 +1,5 @@
 import argparse
+import mlflow
 
 import torch.distributed as dist
 import torch.optim as optim
@@ -15,10 +16,7 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
 except:
     mixed_precision = False  # not installed
 
-wdir = 'weights' + os.sep  # weights dir
-last = wdir + 'last.pt'
-best = wdir + 'best.pt'
-results_file = 'results.txt'
+cfg_template = 'cfg/yolo_v3_cfg_placeholder.cfg'
 
 # Hyperparameters (results68: 59.9 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
 
@@ -48,15 +46,75 @@ if f:
     for k, v in zip(hyp.keys(), np.loadtxt(f[0])):
         hyp[k] = v
 
+def populateCFG(cfg_template):
+    cfg_populated = "cfg/yolov3_train.cfg"
+    parameters = {"$BATCH$": "BATCH", "$SUB_D$": "SUBD", "$HEIGHT$": "HEIGHT", "$WIDTH$": "WIDTH", "$LR$": "LEARN_RATE",
+                  "$BRN_IN$": "BURN_IN", "$STEPS$": "STEPS"}
+    dataset_type = {"$ANCHR$": "ANCHORS", "$ANCHR_NUM$": "ANCHORS_NUM", "$CLASSES$": "CLASSES", "$CLASSES_FILTER$": ""}
+    with open(cfg_template, 'r') as cfl, open(cfg_populated, 'w+') as write_file:
+        cfg_content = cfl.readlines()
+        for k, v in parameters.items():
+            val = os.getenv(v)
+            for idx, i in enumerate(cfg_content):
+                if k in i:
+                    cfg_content[idx] = i.replace(k, val)
+                    break
+            mlflow.log_param(v, val)
+
+        for k, v in dataset_type.items():
+            val = os.getenv(v)
+            if k == "$CLASSES_FILTER$":
+                val = str((int(os.getenv("CLASSES")) + 5) * 3)
+            else:
+                mlflow.log_param(v, val)
+            for idx, i in enumerate(cfg_content):
+                if k in i:
+                    cfg_content[idx] = i.replace(k, val)
+
+
+        write_file.writelines(cfg_content)
+    return cfg_populated
 
 def train():
-    cfg = opt.cfg
+    PROJECT_NAME = opt.project_name
+    RUN_NAME = opt.run_name
+
+    mlflow.set_tracking_uri('mysql://127.0.0.1:3306/mlflow_training_log')
+    try:
+        mlflow.create_experiment(name=PROJECT_NAME, artifact_location='/experiment/artefacts')
+    except:
+        pass
+    mlflow.set_experiment(PROJECT_NAME)
+    mlflow.start_run(run_name=RUN_NAME)
+
     data = opt.data
     img_size, img_size_test = opt.img_size if len(opt.img_size) == 2 else opt.img_size * 2  # train, test sizes
     epochs = opt.epochs  # 500200 batches at bs 64, 117263 images = 273 epochs
     batch_size = opt.batch_size
     accumulate = opt.accumulate  # effective bs = batch_size * accumulate = 16 * 4 = 64
     weights = opt.weights  # initial training weights
+    cfg = opt.cfg
+    if cfg is cfg_template:
+        cfg = populateCFG(cfg_template)
+
+    #Path to save weights and training results
+    rootdir = os.getenv("mntdir") + os.sep
+    wdir = rootdir + PROJECT_NAME + "_" + RUN_NAME + os.sep + 'weights' + os.sep  # weights dir
+    resultsdir = rootdir + PROJECT_NAME + "_" + RUN_NAME + os.sep + 'results' + os.sep
+    dirList = [rootdir, wdir, resultsdir]
+
+    for i in dirList:
+        if not os.path.exists(i):
+            os.makedirs(i)
+
+    last = wdir + 'last.pt'
+    best = wdir + 'best.pt'
+    results_file = resultsdir + 'results.txt'
+
+    #Log params
+    mlflow.log_param("cfg", cfg)
+    mlflow.log_param("epochs", epochs)
+    mlflow.log_param("weights", weights)
 
     # Initialize
     init_seeds()
@@ -76,7 +134,6 @@ def train():
     for f in glob.glob('*_batch*.png') + glob.glob(results_file):
         os.remove(f)
 
-    # Initialize model
     model = Darknet(cfg).to(device)
 
     # Optimizer
@@ -101,8 +158,7 @@ def train():
 
     start_epoch = 0
     best_fitness = 0.0
-    attempt_download(weights)
-    if weights.endswith('.pt'):  # pytorch format
+    if weights.endswith('.pt'):  # pytorch formatl
         # possible weights are '*.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
         chkpt = torch.load(weights, map_location=device)
 
@@ -210,6 +266,7 @@ def train():
     print('Starting training for %g epochs...' % epochs)
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        mlflow.log_metric("current_epoch", epoch+1)
 
         # Prebias
         if prebias:
@@ -233,6 +290,7 @@ def train():
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
 
         mloss = torch.zeros(4).to(device)  # mean losses
+
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
@@ -294,11 +352,9 @@ def train():
                 # ema.update(model)
 
             # Print batch results
-            mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
             mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
             s = ('%10s' * 2 + '%10.3g' * 6) % ('%g/%g' % (epoch, epochs - 1), mem, *mloss, len(targets), img_size)
             pbar.set_description(s)
-
             # end batch ------------------------------------------------------------------------------------------------
 
         # Update scheduler
@@ -319,6 +375,14 @@ def train():
                                       save_json=final_epoch and is_coco,
                                       single_cls=opt.single_cls,
                                       dataloader=testloader)
+
+        # return (mp, mr, map, mf1, *(loss.cpu() / len(dataloader)).tolist()), maps
+        mlflow.log_metric('precision', results[0])
+        mlflow.log_metric('recall', results[1])
+        mlflow.log_metric('mAP', results[2])
+        mlflow.log_metric('F1', results[3])
+        mlflow.log_metric('test_loss', results[4])
+        mlflow.log_metric("training_loss", loss.data[0].item())
 
         # Write epoch results
         with open(results_file, 'a') as f:
@@ -384,16 +448,19 @@ def train():
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
     dist.destroy_process_group() if torch.cuda.device_count() > 1 else None
     torch.cuda.empty_cache()
+    mlflow.end_run()
 
     return results
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--project_name', type=str, default="ultralytics_yolov3")  # 500200 batches at bs 16, 117263 COCO images = 273 epochs
+    parser.add_argument('--run_name', type=str, default="ultralytics_yolov3_run")  # 500200 batches at bs 16, 117263 COCO images = 273 epochs
     parser.add_argument('--epochs', type=int, default=300)  # 500200 batches at bs 16, 117263 COCO images = 273 epochs
     parser.add_argument('--batch-size', type=int, default=16)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolo_v3_cfg_placeholder.cfg', help='*.cfg path')
     parser.add_argument('--data', type=str, default='data/coco2017.data', help='*.data path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
     parser.add_argument('--img-size', nargs='+', type=int, default=[416], help='train and test image-sizes')
@@ -411,7 +478,7 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
     parser.add_argument('--var', type=float, help='debug variable')
     opt = parser.parse_args()
-    opt.weights = last if opt.resume else opt.weights
+    #opt.weights = last if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':

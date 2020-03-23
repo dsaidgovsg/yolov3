@@ -21,6 +21,7 @@
 *.json
 
 *.cfg
+!cfg/yolo_v3_cfg_placeholder.cfg
 !cfg/yolov3*.cfg
 
 storage.googleapis.com
