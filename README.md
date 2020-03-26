@@ -30,10 +30,12 @@ Our Jupyter [notebook](https://colab.research.google.com/github/ultralytics/yolo
 **Plot Training:** `from utils import utils; utils.plot_results()` plots training results from `coco_16img.data`, `coco_64img.data`, 2 example datasets available in the `data/` folder, which train and test on the first 16 and 64 images of the COCO2014-trainval dataset.
 <img src="https://user-images.githubusercontent.com/26833433/63258271-fe9d5300-c27b-11e9-9a15-95038daf4438.png" width="900">
 
-**Results.txt Index Details:**
-| GIoU | Objectness | Classification | Precision | Recall | val GIoU | val Obj | val Clas | mAP@0.5 | F1 |
-| ------------- | ------------- |
+**Index Information for results.txt :**
+
+| GIoU | Objectness | Classification | Precision | Recall | val GIoU | val Obj | val Clas | mAP@0.5 | F1 | 
+| ------------- | ------------- | ------------- | ------------- |  ------------- | ------------- |  ------------- | ------------- |  ------------- | ------------- | 
 | 2 | 3 | 4 | 8 | 9 | 12 | 13 | 14 | 10 | 11 |
+
 
 ## Image Augmentation
 
