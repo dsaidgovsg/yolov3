@@ -32,3 +32,6 @@ export WEIGHTS=$(basename $(ls -t  /usr/src/app/weights/ | head -n 1))
 
 #resume run epochs = completed_epochs + new_epochs
 #python3 train.py --epochs ${EPOCHS} --data data/${DATA} --resume "3bae73b41941472980114ccb04d97408" --device ${GPUS}
+
+#retrieve cfg used
+mv ./cfg/yolov3_train.cfg /${MNTDIR}/artifacts/${PROJECT_NAME}_${RUN_NAME}.cfg

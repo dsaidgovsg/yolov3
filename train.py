@@ -1,7 +1,5 @@
 import argparse
 import mlflow
-import shutil
-import glob
 
 import torch.distributed as dist
 import torch.optim as optim
@@ -22,9 +20,8 @@ CFG_TEMPLATE = 'cfg/yolo_v3_cfg_placeholder.cfg'
 ROOT_DIR = os.getenv('MNTDIR') + os.sep
 PROJECT_NAME = os.getenv('PROJECT_NAME')
 RUN_NAME = os.getenv('RUN_NAME')
-WDIR = ROOT_DIR + PROJECT_NAME + "_" + RUN_NAME + os.sep + 'weights' + os.sep  # weights dir
-RDIR = ROOT_DIR + PROJECT_NAME + "_" + RUN_NAME + os.sep + 'results' + os.sep
-
+WDIR = ROOT_DIR + 'artifacts' + os.sep + 'weights' + os.sep  # weights dir
+RDIR = ROOT_DIR + 'artifacts' + os.sep + 'results' + os.sep
 
 # Hyperparameters (results68: 59.9 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
 
@@ -54,6 +51,7 @@ if f:
     for k, v in zip(hyp.keys(), np.loadtxt(f[0])):
         hyp[k] = v
 
+
 def populateCFG(cfg_template, param_logger):
     cfg_populated = "cfg/yolov3_train.cfg"
     parameters = {"$BATCH$": "BATCH", "$SUB_D$": "SUBD", "$HEIGHT$": "HEIGHT", "$WIDTH$": "WIDTH", "$LR$": "LEARN_RATE",
@@ -74,22 +72,21 @@ def populateCFG(cfg_template, param_logger):
             val = os.getenv(v)
             if k == "$CLASSES_FILTER$":
                 val = str((int(os.getenv("CLASSES")) + 5) * 3)
-            else:
-                if param_logger:
-                    mlflow.log_param(v, val)
+            elif param_logger and k != "$ANCHR$":
+                mlflow.log_param(v, val)
             for idx, i in enumerate(cfg_content):
                 if k in i:
                     cfg_content[idx] = i.replace(k, val)
 
-
         write_file.writelines(cfg_content)
     return cfg_populated
+
 
 def train():
     mlflow.set_tracking_uri('mysql://127.0.0.1:3306/mlflow_training_log')
     param_logger = True
 
-    #Mlflow start new run if resume run is not true
+    # Mlflow start new run if resume run is not true
     if not opt.resume:
         try:
             mlflow.create_experiment(name=PROJECT_NAME, artifact_location='/experiment/artefacts')
@@ -111,7 +108,7 @@ def train():
     if cfg is CFG_TEMPLATE:
         cfg = populateCFG(CFG_TEMPLATE, param_logger)
 
-    #Path to save weights and training results
+    # Path to save weights and training results
     dirList = [ROOT_DIR, WDIR, RDIR]
 
     for i in dirList:
@@ -122,11 +119,9 @@ def train():
     best = WDIR + 'best.pt'
     results_file = RDIR + 'results.txt'
 
-    #Log params
-    if(param_logger):
-        mlflow.log_param("cfg", cfg)
-        mlflow.log_param("epochs", epochs)
-        mlflow.log_param("weights", weights)
+    # Log params
+    if (param_logger):
+        mlflow.log_params({"cfg": cfg, "epochs": epochs, "weights": weights})
 
     # Initialize
     init_seeds()
@@ -278,7 +273,7 @@ def train():
     print('Starting training for %g epochs...' % epochs)
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-        mlflow.log_metric("current_epoch", epoch+1)
+        mlflow.log_metric("current_epoch", epoch + 1)
 
         # Prebias
         if prebias:
@@ -390,12 +385,8 @@ def train():
                                       dataloader=testloader)
 
         # return (mp, mr, map, mf1, *(loss.cpu() / len(dataloader)).tolist()), maps
-        mlflow.log_metric('precision', results[0])
-        mlflow.log_metric('recall', results[1])
-        mlflow.log_metric('mAP', results[2])
-        mlflow.log_metric('F1', results[3])
-        mlflow.log_metric('test_loss', results[4])
-        mlflow.log_metric("training_loss", loss.data[0].item())
+        mlflow.log_metrics({'precision': results[0], 'recall': results[1], 'mAP': results[2], 'F1': results[3],
+                            'test_loss': results[4], "training_loss": loss.data[0].item()})
 
         # Write epoch results
         with open(results_file, 'a') as f:
@@ -415,6 +406,8 @@ def train():
         fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
         if fi > best_fitness:
             best_fitness = fi
+            mlflow.log_metrics(
+                {'bw_precision': results[0], 'bw_recall': results[1], 'bw_mAP': results[2], 'bw_F1': results[3]})
 
         # Save training results
         save = (not opt.nosave) or (final_epoch and not opt.evolve)
@@ -457,7 +450,8 @@ def train():
             # os.system('gsutil cp %s gs://%s/weights' % (WDIR + fbest, opt.bucket))
 
     if not opt.evolve:
-        plot_results()  # save as results.png
+        shutil.copy(results_file, os.getcwd())
+        plot_results()  # saves as results.png
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
     dist.destroy_process_group() if torch.cuda.device_count() > 1 else None
     torch.cuda.empty_cache()
@@ -490,7 +484,7 @@ if __name__ == '__main__':
     parser.add_argument('--var', type=float, help='debug variable')
     opt = parser.parse_args()
 
-    opt.weights = ROOT_DIR + PROJECT_NAME + "_" + RUN_NAME + os.sep + 'weights' + os.sep + 'last.pt' if opt.resume else opt.weights
+    opt.weights = WDIR + 'last.pt' if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':
