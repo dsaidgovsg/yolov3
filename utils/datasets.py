@@ -240,7 +240,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
             raise StopIteration
 
         # Letterbox
-        img = [letterbox(x, new_shape=self.img_size, auto=self.rect, interp=cv2.INTER_LINEAR)[0] for x in img0]
+        img = [letterbox(x, new_shape=self.img_size, auto=self.rect)[0] for x in img0]
 
         # Stack
         img = np.stack(img, 0)
@@ -313,7 +313,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / 32.).astype(np.int) * 32
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / 64.).astype(np.int) * 64
 
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
@@ -379,7 +379,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
                 pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
                     nf, nm, ne, nd, n)
-            assert nf > 0, 'No labels found. See %s' % help_url
+            assert nf > 0, 'No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         if cache_images:  # if training
@@ -414,9 +414,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.image_weights:
             index = self.indices[index]
 
-        img_path = self.img_files[index]
-        label_path = self.label_files[index]
-
         hyp = self.hyp
         if self.mosaic:
             # Load mosaic
@@ -434,19 +431,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # Load labels
             labels = []
-            if os.path.isfile(label_path):
-                x = self.labels[index]
-                if x is None:  # labels not preloaded
-                    with open(label_path, 'r') as f:
-                        x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
-
-                if x.size > 0:
-                    # Normalized xywh to pixel xyxy format
-                    labels = x.copy()
-                    labels[:, 1] = ratio[0] * w * (x[:, 1] - x[:, 3] / 2) + pad[0]  # pad width
-                    labels[:, 2] = ratio[1] * h * (x[:, 2] - x[:, 4] / 2) + pad[1]  # pad height
-                    labels[:, 3] = ratio[0] * w * (x[:, 1] + x[:, 3] / 2) + pad[0]
-                    labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + pad[1]
+            x = self.labels[index]
+            if x is not None and x.size > 0:
+                # Normalized xywh to pixel xyxy format
+                labels = x.copy()
+                labels[:, 1] = ratio[0] * w * (x[:, 1] - x[:, 3] / 2) + pad[0]  # pad width
+                labels[:, 2] = ratio[1] * h * (x[:, 2] - x[:, 4] / 2) + pad[1]  # pad height
+                labels[:, 3] = ratio[0] * w * (x[:, 1] + x[:, 3] / 2) + pad[0]
+                labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + pad[1]
 
         if self.augment:
             # Augment imagespace
@@ -496,7 +488,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
 
-        return torch.from_numpy(img), labels_out, img_path, shapes
+        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
     @staticmethod
     def collate_fn(batch):
@@ -515,8 +507,8 @@ def load_image(self, index):
         assert img is not None, 'Image Not Found ' + img_path
         h0, w0 = img.shape[:2]  # orig hw
         r = self.img_size / max(h0, w0)  # resize image to img_size
-        if r < 1 or (self.augment and (r != 1)):  # always resize down, only resize up if training with augmentation
-            interp = cv2.INTER_LINEAR if self.augment else cv2.INTER_AREA  # LINEAR for training, AREA for testing
+        if r < 1 or (self.augment and r != 1):  # always resize down, only resize up if training with augmentation
+            interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
@@ -529,6 +521,11 @@ def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
     np.clip(img_hsv[:, :, 0], None, 179, out=img_hsv[:, :, 0])  # inplace hue clip (0 - 179 deg)
     cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
 
+    # Histogram equalization
+    # if random.random() < 0.2:
+    #     for i in range(3):
+    #         img[:, :, i] = cv2.equalizeHist(img[:, :, i])
+
 
 def load_mosaic(self, index):
     # loads images in a mosaic
@@ -536,7 +533,6 @@ def load_mosaic(self, index):
     labels4 = []
     s = self.img_size
     xc, yc = [int(random.uniform(s * 0.5, s * 1.5)) for _ in range(2)]  # mosaic center x, y
-    img4 = np.zeros((s * 2, s * 2, 3), dtype=np.uint8) + 128  # base image with 4 tiles
     indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
     for i, index in enumerate(indices):
         # Load image
@@ -544,6 +540,7 @@ def load_mosaic(self, index):
 
         # place img in img4
         if i == 0:  # top left
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -597,8 +594,7 @@ def load_mosaic(self, index):
     return img4, labels4
 
 
-def letterbox(img, new_shape=(416, 416), color=(128, 128, 128),
-              auto=True, scaleFill=False, scaleup=True, interp=cv2.INTER_AREA):
+def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
@@ -614,7 +610,7 @@ def letterbox(img, new_shape=(416, 416), color=(128, 128, 128),
     new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, 32), np.mod(dh, 32)  # wh padding
+        dw, dh = np.mod(dw, 64), np.mod(dh, 64)  # wh padding
     elif scaleFill:  # stretch
         dw, dh = 0.0, 0.0
         new_unpad = new_shape
@@ -624,7 +620,7 @@ def letterbox(img, new_shape=(416, 416), color=(128, 128, 128),
     dh /= 2
 
     if shape[::-1] != new_unpad:  # resize
-        img = cv2.resize(img, new_unpad, interpolation=interp)  # INTER_AREA is better, INTER_LINEAR is faster
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
     img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
@@ -659,9 +655,8 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
 
     # Combined rotation matrix
     M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
-    changed = (border != 0) or (M != np.eye(3)).any()
-    if changed:
-        img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_AREA, borderValue=(128, 128, 128))
+    if (border != 0) or (M != np.eye(3)).any():  # image changed
+        img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
 
     # Transform label coordinates
     n = len(targets)

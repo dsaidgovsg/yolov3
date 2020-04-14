@@ -1,3 +1,4 @@
+import math
 import os
 import time
 from copy import deepcopy
@@ -49,6 +50,23 @@ def time_synchronized():
     return time.time()
 
 
+def initialize_weights(model):
+    for m in model.modules():
+        t = type(m)
+        if t is nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif t is nn.BatchNorm2d:
+            m.eps = 1e-4
+            m.momentum = 0.03
+        elif t in [nn.LeakyReLU, nn.ReLU, nn.ReLU6]:
+            m.inplace = True
+
+
+def find_modules(model, mclass=nn.Conv2d):
+    # finds layer indices matching module class 'mclass'
+    return [i for i, m in enumerate(model.module_list) if isinstance(m, mclass)]
+
+
 def fuse_conv_and_bn(conv, bn):
     # https://tehnokv.com/posts/fusing-batchnorm-and-conv/
     with torch.no_grad():
@@ -86,12 +104,15 @@ def model_info(model, verbose=False):
             name = name.replace('module_list.', '')
             print('%5g %40s %9s %12g %20s %10.3g %10.3g' %
                   (i, name, p.requires_grad, p.numel(), list(p.shape), p.mean(), p.std()))
-    print('Model Summary: %g layers, %g parameters, %g gradients' % (len(list(model.parameters())), n_p, n_g))
 
-    # FLOPS report
-    # from thop import profile
-    # macs, params = profile(model, inputs=(torch.zeros(1, 3, 608, 608),))
-    # print('%.3f FLOPS' % (macs / 1E9 * 2))
+    try:  # FLOPS
+        from thop import profile
+        macs, _ = profile(model, inputs=(torch.zeros(1, 3, 480, 640),))
+        fs = ', %.1f GFLOPS' % (macs / 1E9 * 2)
+    except:
+        fs = ''
+
+    print('Model Summary: %g layers, %g parameters, %g gradients%s' % (len(list(model.parameters())), n_p, n_g, fs))
 
 
 def load_classifier(name='resnet101', n=2):
@@ -111,14 +132,15 @@ def load_classifier(name='resnet101', n=2):
     return model
 
 
-def scale_img(img, r=1.0):  # img(16,3,256,416), r=ratio
-    # scales a batch of pytorch images while retaining same input shape (cropped or grey-padded)
+def scale_img(img, ratio=1.0, same_shape=True):  # img(16,3,256,416), r=ratio
+    # scales img(bs,3,y,x) by ratio
     h, w = img.shape[2:]
-    s = (int(h * r), int(w * r))  # new size
-    p = h - s[0], w - s[1]  # pad/crop pixels
+    s = (int(h * ratio), int(w * ratio))  # new size
     img = F.interpolate(img, size=s, mode='bilinear', align_corners=False)  # resize
-    return F.pad(img, [0, p[1], 0, p[0]], value=0.5) if r < 1.0 else img[:, :, :p[0], :p[1]]  # pad/crop
-    # cv2.imwrite('scaled.jpg', np.array(img[0].permute((1, 2, 0)) * 255.0))
+    if not same_shape:  # pad/crop img
+        gs = 64  # (pixels) grid size
+        h, w = [math.ceil(x * ratio / gs) * gs for x in (h, w)]
+    return F.pad(img, [0, w - s[1], 0, h - s[0]], value=0.447)  # value = imagenet mean
 
 
 class ModelEMA:
@@ -139,11 +161,12 @@ class ModelEMA:
     I've tested with the sequence in my own train.py for torch.DataParallel, apex.DDP, and single-GPU.
     """
 
-    def __init__(self, model, decay=0.9998, device=''):
+    def __init__(self, model, decay=0.9999, device=''):
         # make a copy of the model for accumulating moving average of weights
         self.ema = deepcopy(model)
         self.ema.eval()
-        self.decay = decay
+        self.updates = 0  # number of EMA updates
+        self.decay = lambda x: decay * (1 - math.exp(-x / 2000))  # decay exponential ramp (to help early epochs)
         self.device = device  # perform ema on different device from model if set
         if device:
             self.ema.to(device=device)
@@ -151,7 +174,8 @@ class ModelEMA:
             p.requires_grad_(False)
 
     def update(self, model):
-        d = self.decay
+        self.updates += 1
+        d = self.decay(self.updates)
         with torch.no_grad():
             if type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel):
                 msd, esd = model.module.state_dict(), self.ema.module.state_dict()
