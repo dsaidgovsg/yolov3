@@ -1,5 +1,4 @@
 import argparse
-import mlflow
 
 import torch.distributed as dist
 import torch.optim as optim
@@ -22,6 +21,8 @@ PROJECT_NAME = os.getenv('PROJECT_NAME')
 RUN_NAME = os.getenv('RUN_NAME')
 WDIR = ROOT_DIR + 'artifacts' + os.sep + 'weights' + os.sep  # weights dir
 RDIR = ROOT_DIR + 'artifacts' + os.sep + 'results' + os.sep
+MLOGGER = False
+PARAM_LOGGER = False
 
 # Hyperparameters (results68: 59.9 mAP@0.5 yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
 
@@ -52,27 +53,16 @@ if f:
         hyp[k] = v
 
 
-def populateCFG(cfg_template, param_logger):
+def populateCFG(cfg_template):
     cfg_populated = "cfg/yolov3_train.cfg"
-    parameters = {"$BATCH$": "BATCH", "$SUB_D$": "SUBD", "$HEIGHT$": "HEIGHT", "$WIDTH$": "WIDTH", "$LR$": "LEARN_RATE",
-                  "$BRN_IN$": "BURN_IN", "$STEPS$": "STEPS"}
     dataset_type = {"$ANCHR$": "ANCHORS", "$ANCHR_NUM$": "ANCHORS_NUM", "$CLASSES$": "CLASSES", "$CLASSES_FILTER$": ""}
     with open(cfg_template, 'r') as cfl, open(cfg_populated, 'w+') as write_file:
         cfg_content = cfl.readlines()
-        for k, v in parameters.items():
-            val = os.getenv(v)
-            for idx, i in enumerate(cfg_content):
-                if k in i:
-                    cfg_content[idx] = i.replace(k, val)
-                    break
-            if param_logger:
-                mlflow.log_param(v, val)
-
         for k, v in dataset_type.items():
             val = os.getenv(v)
             if k == "$CLASSES_FILTER$":
                 val = str((int(os.getenv("CLASSES")) + 5) * 3)
-            elif param_logger and k != "$ANCHR$":
+            elif MLOGGER and (PARAM_LOGGER and k == "$ANCHR_NUM$"):
                 mlflow.log_param(v, val)
             for idx, i in enumerate(cfg_content):
                 if k in i:
@@ -83,21 +73,6 @@ def populateCFG(cfg_template, param_logger):
 
 
 def train():
-    mlflow.set_tracking_uri('mysql://127.0.0.1:3306/mlflow_training_log')
-    param_logger = True
-
-    # Mlflow start new run if resume run is not true
-    if not opt.resume:
-        try:
-            mlflow.create_experiment(name=PROJECT_NAME, artifact_location='/experiment/artefacts')
-        except:
-            pass
-        mlflow.set_experiment(PROJECT_NAME)
-        mlflow.start_run(run_name=RUN_NAME)
-    else:
-        param_logger = False
-        mlflow.start_run(opt.resume)
-
     data = opt.data
     img_size, img_size_test = opt.img_size if len(opt.img_size) == 2 else opt.img_size * 2  # train, test sizes
     epochs = opt.epochs  # 500200 batches at bs 64, 117263 images = 273 epochs
@@ -106,7 +81,7 @@ def train():
     weights = opt.weights  # initial training weights
     cfg = opt.cfg
     if cfg is CFG_TEMPLATE:
-        cfg = populateCFG(CFG_TEMPLATE, param_logger)
+        cfg = populateCFG(CFG_TEMPLATE)
 
     # Path to save weights and training results
     dirList = [ROOT_DIR, WDIR, RDIR]
@@ -120,8 +95,8 @@ def train():
     results_file = RDIR + 'results.txt'
 
     # Log params
-    if (param_logger):
-        mlflow.log_params({"cfg": cfg, "epochs": epochs, "weights": weights})
+    if MLOGGER and PARAM_LOGGER:
+        mlflow.log_params({"epochs": epochs, "weights": weights})
 
     # Initialize
     init_seeds()
@@ -273,7 +248,6 @@ def train():
     print('Starting training for %g epochs...' % epochs)
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-        mlflow.log_metric("current_epoch", epoch + 1)
 
         # Prebias
         if prebias:
@@ -326,7 +300,7 @@ def train():
 
             # Multi-Scale training
             if opt.multi_scale:
-                if ni / accumulate % 1 == 0:  #  adjust img_size (67% - 150%) every 1 batch
+                if ni / accumulate % 1 == 0:  #  adjust img_size (67% - 150%) every 1 batch
                     img_size = random.randrange(img_sz_min, img_sz_max + 1) * 32
                 sf = img_size / max(imgs.shape[2:])  # scale factor
                 if sf != 1:
@@ -385,8 +359,10 @@ def train():
                                       dataloader=testloader)
 
         # return (mp, mr, map, mf1, *(loss.cpu() / len(dataloader)).tolist()), maps
-        mlflow.log_metrics({'precision': results[0], 'recall': results[1], 'mAP': results[2], 'F1': results[3],
-                            'test_loss': results[4], "training_loss": loss.data[0].item()})
+        if MLOGGER:
+            mlflow.log_metrics(
+                {'current_epoch': epoch + 1, 'precision': results[0], 'recall': results[1], 'mAP': results[2],
+                 'F1': results[3], 'test_loss': results[4], 'training_loss': loss.data[0].item()})
 
         # Write epoch results
         with open(results_file, 'a') as f:
@@ -406,8 +382,9 @@ def train():
         fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
         if fi > best_fitness:
             best_fitness = fi
-            mlflow.log_metrics(
-                {'bw_precision': results[0], 'bw_recall': results[1], 'bw_mAP': results[2], 'bw_F1': results[3]})
+            if MLOGGER:
+                mlflow.log_metrics({'bw_precision': results[0], 'bw_recall': results[1], 'bw_mAP': results[2],
+                                    'bw_F1': results[3]})
 
         # Save training results
         save = (not opt.nosave) or (final_epoch and not opt.evolve)
@@ -500,6 +477,23 @@ if __name__ == '__main__':
             from torch.utils.tensorboard import SummaryWriter
 
             tb_writer = SummaryWriter()
+
+            # Mlflow start new run if resume run is not true
+            import mlflow
+
+            mlflow.set_tracking_uri('mysql://127.0.0.1:3306/mlflow_training_log')
+
+            if not opt.resume:
+                mlflow.create_experiment(name=PROJECT_NAME, artifact_location='/experiment/artefacts')
+                mlflow.set_experiment(PROJECT_NAME)
+                mlflow.start_run(run_name=RUN_NAME)
+                PARAM_LOGGER = True
+
+            else:
+                mlflow.start_run(opt.resume)
+
+            MLOGGER = True
+
         except:
             pass
 
