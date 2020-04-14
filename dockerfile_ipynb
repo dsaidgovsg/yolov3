@@ -1,0 +1,30 @@
+FROM pytorch/pytorch:1.4-cuda10.1-cudnn7-runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+#Install OpenCV dependencies
+RUN apt-get update
+RUN apt-get install -y libopencv-dev \
+	               unzip zip 
+
+# install these pip packages
+RUN pip install Cython
+RUN pip install tensorboard \
+    jupyter-console \
+    jupyterlab \
+    ipywidgets \
+    kubeflow-fairing \
+    awscli \
+    opencv-python\
+    matplotlib \
+    pycocotools \
+    tqdm \
+    pillow 
+
+WORKDIR /home
+
+# include the following lines in your Dockerfile
+EXPOSE 8888
+EXPOSE 6006
+ENV NB_PREFIX /
+CMD ["/bin/bash", "-c", "jupyter notebook --notebook-dir=/home --ip=0.0.0.0 --no-browser --allow-root --port=8888 --NotebookApp.token='' --NotebookApp.password='' --NotebookApp.allow_origin='*' --NotebookApp.base_url=${NB_PREFIX}"]

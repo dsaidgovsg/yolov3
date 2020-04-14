@@ -381,6 +381,7 @@ def train():
         fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
         if fi > best_fitness:
             best_fitness = fi
+            print("Found Best Weights @ epoch: %d, %f" % (epoch, results[2]))
             if MLOGGER:
                 mlflow.log_metrics({'bw_precision': results[0], 'bw_recall': results[1], 'bw_mAP': results[2],
                                     'bw_F1': results[3]})
@@ -398,10 +399,12 @@ def train():
 
             # Save last checkpoint
             torch.save(chkpt, last)
+            print("Saving Last Weights @ epoch: %d %f" % (epoch, results[2]))
 
             # Save best checkpoint
             if (best_fitness == fi) and not final_epoch:
                 torch.save(chkpt, best)
+                print("Saving Best Weights @ epoch: %d %f"% (epoch, results[2]))
 
             # Save backup every 10 epochs (optional)
             # if epoch > 0 and epoch % 10 == 0:
@@ -416,8 +419,8 @@ def train():
     n = opt.name
     if len(n):
         n = '_' + n if not n.isnumeric() else n
-        fresults, flast, fbest = 'results%s.txt' % n, wdir + 'last%s.pt' % n, wdir + 'best%s.pt' % n
-        for f1, f2 in zip([wdir + 'last.pt', wdir + 'best.pt', 'results.txt'], [flast, fbest, fresults]):
+        fresults, flast, fbest = 'results%s.txt' % n, WDIR + 'last%s.pt' % n, WDIR + 'best%s.pt' % n
+        for f1, f2 in zip([WDIR + 'last.pt', WDIR + 'best.pt', 'results.txt'], [flast, fbest, fresults]):
             if os.path.exists(f1):
                 os.rename(f1, f2)  # rename
                 ispt = f2.endswith('.pt')  # is *.pt
