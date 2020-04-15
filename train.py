@@ -32,7 +32,7 @@ hyp = {'giou': 3.54,  # giou loss gain
        'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.225,  # iou training threshold
-       'lr0': 0.01,  # initial learning rate (SGD=5E-3, Adam=5E-4)
+       'lr0': 0.001,  # initial learning rate (SGD=5E-3, Adam=5E-4)
        'lrf': 0.0005,  # final learning rate (with cos scheduler)
        'momentum': 0.937,  # SGD momentum
        'weight_decay': 0.000484,  # optimizer weight decay
@@ -58,7 +58,7 @@ if hyp['fl_gamma']:
 
 
 def populateCFG(cfg_template):
-    cfg_populated = "cfg/yolov3_train.cfg"
+    cfg_populated = ("cfg/yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME))
     dataset_type = {"$ANCHR$": "ANCHORS", "$ANCHR_NUM$": "ANCHORS_NUM", "$CLASSES$": "CLASSES", "$CLASSES_FILTER$": ""}
     with open(cfg_template, 'r') as cfl, open(cfg_populated, 'w+') as write_file:
         cfg_content = cfl.readlines()
@@ -101,7 +101,8 @@ def train():
 
     # Log params
     if MLOGGER and PARAM_LOGGER:
-        mlflow.log_params({"epochs": epochs, "weights": weights})
+        mlflow.log_params(hyp)
+        mlflow.log_params({"epochs": epochs, "starting_weights": weights, "img_size": opt.img_size})
 
     # Image Sizes
     gs = 64  # (pixels) grid size
@@ -464,6 +465,7 @@ if __name__ == '__main__':
 
     opt.weights = WDIR + 'last.pt' if opt.resume else opt.weights
     print(opt)
+    print(hyp)
     opt.img_size.extend([opt.img_size[-1]] * (3 - len(opt.img_size)))  # extend to 3 sizes (min, max, test)
     device = torch_utils.select_device(opt.device, apex=mixed_precision, batch_size=opt.batch_size)
     if device.type == 'cpu':
@@ -556,3 +558,10 @@ if __name__ == '__main__':
 
     for file in glob.glob("*.png"):
         shutil.move(file, RDIR + file)
+
+    if tb_writer:
+        try:
+            shutil.copytree("runs", RDIR + "runs")
+            shutil.copy(("cfg/yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)), RDIR + ("yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)))
+        except:
+            pass
