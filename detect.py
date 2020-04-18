@@ -34,11 +34,11 @@ def detect(save_img=False):
         modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
         modelc.to(device).eval()
 
-    # Fuse Conv2d + BatchNorm2d layers
-    # model.fuse()
-
     # Eval mode
     model.to(device).eval()
+
+    # Fuse Conv2d + BatchNorm2d layers
+    # model.fuse()
 
     # Export mode
     if ONNX_EXPORT:
@@ -75,6 +75,7 @@ def detect(save_img=False):
 
     # Run inference
     t0 = time.time()
+    _ = model(torch.zeros((1, 3, img_size, img_size), device=device)) if device.type != 'cpu' else None  # run once
     for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -84,11 +85,16 @@ def detect(save_img=False):
 
         # Inference
         t1 = torch_utils.time_synchronized()
-        pred = model(img)[0].float() if half else model(img)[0]
+        pred = model(img, augment=opt.augment)[0]
         t2 = torch_utils.time_synchronized()
 
+        # to float
+        if half:
+            pred = pred.float()
+
         # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres,
+                                   multi_label=False, classes=opt.classes, agnostic=opt.agnostic_nms)
 
         # Apply Classifier
         if classify:
@@ -162,7 +168,7 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='weights path')
     parser.add_argument('--source', type=str, default='data/samples', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
-    parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
@@ -172,6 +178,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
+    parser.add_argument('--augment', action='store_true', help='augmented inference')
     opt = parser.parse_args()
     print(opt)
 

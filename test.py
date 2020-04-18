@@ -17,6 +17,7 @@ def test(cfg,
          iou_thres=0.6,  # for nms
          save_json=False,
          single_cls=False,
+         augment=False,
          model=None,
          dataloader=None):
     # Initialize/load model and set device
@@ -69,6 +70,7 @@ def test(cfg,
 
     seen = 0
     model.eval()
+    _ = model(torch.zeros((1, 3, img_size, img_size), device=device)) if device.type != 'cpu' else None  # run once
     coco91class = coco80_to_coco91_class()
     s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
     p, r, f1, mp, mr, map, mf1, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
@@ -87,23 +89,10 @@ def test(cfg,
 
         # Disable gradients
         with torch.no_grad():
-            aug = False  # augment https://github.com/ultralytics/yolov3/issues/931
-            if aug:
-                imgs = torch.cat((imgs,
-                                  imgs.flip(3),  # flip-lr
-                                  torch_utils.scale_img(imgs, 0.7),  # scale
-                                  ), 0)
-
             # Run model
             t = torch_utils.time_synchronized()
-            inf_out, train_out = model(imgs)  # inference and training outputs
+            inf_out, train_out = model(imgs, augment=augment)  # inference and training outputs
             t0 += torch_utils.time_synchronized() - t
-
-            if aug:
-                x = torch.split(inf_out, nb, dim=0)
-                x[1][..., 0] = width - x[1][..., 0]  # flip lr
-                x[2][..., :4] /= 0.7  # scale
-                inf_out = torch.cat(x, 1)
 
             # Compute loss
             if hasattr(model, 'hyp'):  # if model has loss hyperparameters
@@ -199,7 +188,7 @@ def test(cfg,
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap[i], f1[i]))
 
     # Print speeds
-    if verbose:
+    if verbose or save_json:
         t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (img_size, img_size, batch_size)  # tuple
         print('Speed: %.1f/%.1f/%.1f ms inference/NMS/total per %gx%g image at batch-size %g' % t)
 
@@ -239,7 +228,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
     parser.add_argument('--data', type=str, default='data/coco2014.data', help='*.data path')
     parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='weights path')
-    parser.add_argument('--batch-size', type=int, default=32, help='size of each image batch')
+    parser.add_argument('--batch-size', type=int, default=16, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
@@ -247,6 +236,7 @@ if __name__ == '__main__':
     parser.add_argument('--task', default='test', help="'test', 'study', 'benchmark'")
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
+    parser.add_argument('--augment', action='store_true', help='augmented inference')
     opt = parser.parse_args()
     opt.save_json = opt.save_json or any([x in opt.data for x in ['coco.data', 'coco2014.data', 'coco2017.data']])
     print(opt)
@@ -261,7 +251,8 @@ if __name__ == '__main__':
              opt.conf_thres,
              opt.iou_thres,
              opt.save_json,
-             opt.single_cls)
+             opt.single_cls,
+             opt.augment)
 
     elif opt.task == 'benchmark':  # mAPs at 320-608 at conf 0.5 and 0.7
         y = []
