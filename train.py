@@ -17,10 +17,12 @@ except:
 
 CFG_TEMPLATE = 'cfg/yolo_v3_cfg_placeholder.cfg'
 ROOT_DIR = os.getenv('MNTDIR') + os.sep
+MLFLOW_TRACKING_URI = os.getenv('MLFLOW_URI')
 PROJECT_NAME = os.getenv('PROJECT_NAME')
 RUN_NAME = os.getenv('RUN_NAME')
 WDIR = ROOT_DIR + 'artifacts' + os.sep + 'weights' + os.sep  # weights dir
 RDIR = ROOT_DIR + 'artifacts' + os.sep + 'results' + os.sep
+MLFLOW_ARTEFACT_LOC = ROOT_DIR + 'artifacts' + os.sep + "mlflow"
 MLOGGER = False
 PARAM_LOGGER = False
 
@@ -486,10 +488,10 @@ if __name__ == '__main__':
             # Mlflow start new run if resume run is not true
             import mlflow
 
-            mlflow.set_tracking_uri('mysql://127.0.0.1:3306/mlflow_training_log')
+            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
             if not opt.resume:
-                mlflow.create_experiment(name=PROJECT_NAME, artifact_location='/experiment/artefacts')
+                mlflow.create_experiment(name=PROJECT_NAME, artifact_location=MLFLOW_ARTEFACT_LOC)
                 mlflow.set_experiment(PROJECT_NAME)
                 mlflow.start_run(run_name=RUN_NAME)
                 PARAM_LOGGER = True
