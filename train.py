@@ -18,11 +18,12 @@ except:
 CFG_TEMPLATE = 'cfg/yolo_v3_cfg_placeholder.cfg'
 ROOT_DIR = os.getenv('MNTDIR') + os.sep
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_URI')
+MLFLOW_ARTEFACT_LOC = os.getenv('MLFLOW_ARTEFACT')
 PROJECT_NAME = os.getenv('PROJECT_NAME')
 RUN_NAME = os.getenv('RUN_NAME')
 WDIR = ROOT_DIR + 'artifacts' + os.sep + 'weights' + os.sep  # weights dir
 RDIR = ROOT_DIR + 'artifacts' + os.sep + 'results' + os.sep
-MLFLOW_ARTEFACT_LOC = ROOT_DIR + 'artifacts' + os.sep + "mlflow"
+
 MLOGGER = False
 PARAM_LOGGER = False
 
