@@ -408,7 +408,7 @@ def train():
             # Save best checkpoint
             if (best_fitness == fi) and not final_epoch:
                 torch.save(chkpt, best)
-                print("Saving Best Weights @ epoch: %d %f"% (epoch, results[2]))
+                print("Saving Best Weights @ epoch: %d %f" % (epoch, results[2]))
 
             # Save backup every 10 epochs (optional)
             # if epoch > 0 and epoch % 10 == 0:
@@ -492,8 +492,10 @@ if __name__ == '__main__':
             mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
             if not opt.resume:
-                mlflow.create_experiment(name=PROJECT_NAME, artifact_location=MLFLOW_ARTEFACT_LOC)
-                mlflow.set_experiment(PROJECT_NAME)
+                try:
+                    mlflow.create_experiment(name=PROJECT_NAME, artifact_location=MLFLOW_ARTEFACT_LOC)
+                except:
+                    mlflow.set_experiment(PROJECT_NAME)
                 mlflow.start_run(run_name=RUN_NAME)
                 PARAM_LOGGER = True
 
@@ -565,6 +567,7 @@ if __name__ == '__main__':
     if tb_writer:
         try:
             shutil.copytree("runs", RDIR + "runs")
-            shutil.copy(("cfg/yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)), RDIR + ("yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)))
+            shutil.copy(("cfg/yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)),
+                        RDIR + ("yolov3_%s-%s.cfg" % (PROJECT_NAME, RUN_NAME)))
         except:
             pass
