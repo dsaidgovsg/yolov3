@@ -495,7 +495,8 @@ if __name__ == '__main__':
                 try:
                     mlflow.create_experiment(name=PROJECT_NAME, artifact_location=MLFLOW_ARTEFACT_LOC)
                 except:
-                    mlflow.set_experiment(PROJECT_NAME)
+                    pass
+                mlflow.set_experiment(PROJECT_NAME)
                 mlflow.start_run(run_name=RUN_NAME)
                 PARAM_LOGGER = True
 
